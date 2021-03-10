@@ -135,7 +135,7 @@ rule all:
     input:
         expand("results/{file}",
                file=["chm13v1_array_enrichments.tsv",
-                     "peak_overlap.txt",
+                     "macs2_peak_overlap.txt",
                      "control_mapping_stats.txt",
                      "mapping_stats.txt"]),
         expand("Kmer_BigWigs/{genome}_{kmer}mer.bw",
@@ -1001,7 +1001,7 @@ rule liftOver_intersection:
         GLO_broad=expand("macs2/{label}.GRCh38p13-chm13v1_peaks.broadPeak",
                          label=BROAD_TRACKS)
     output:
-        "results/peak_overlap.txt"
+        "results/macs2_peak_overlap.txt"
     params:
         broad=BROAD_TRACKS,
         narrow=NARROW_TRACKS
