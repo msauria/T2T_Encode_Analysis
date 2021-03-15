@@ -157,6 +157,7 @@ rule download_software:
     shell:
         """
         wget http://hgdownload.soe.ucsc.edu/admin/exe/{params.system}/{params.sw} -O {output}
+        chmod a+rx {output}
         """
 
 rule build_KMC:
@@ -173,7 +174,9 @@ rule build_KMC:
         git checkout kmer_mapping
         cd KMC && make
         cp KMC/bin/kmc bin/
+        chmod a+rx bin/kmc
         cp KMC/bin/kmc_genome_counts bin/
+        chmod a+rx bin/kmc_genome_counts
         """
 
 
