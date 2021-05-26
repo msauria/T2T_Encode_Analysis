@@ -167,8 +167,7 @@ rule download_software:
 rule build_KMC:
     output:
         "bin/kmc",
-        "bin/kmc_genome_counts",
-        "bin/kmc_kmer_sum"
+        "bin/kmc_genome_counts"
     log:
         "logs/build_kmc.log"
     conda:
@@ -182,8 +181,6 @@ rule build_KMC:
         chmod a+rx bin/kmc
         cp KMC/bin/kmc_genome_counts bin/
         chmod a+rx bin/kmc_genome_counts
-        cp KMC/bin/kmc_kmer_sum bin/
-        chmod a+rx bin/kmc_kmer_sum
         """
 
 
