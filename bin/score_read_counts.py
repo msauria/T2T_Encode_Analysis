@@ -24,12 +24,26 @@ def load_samples(fname):
 
 def load_arrays(fname):
     data = []
-    with open(fname) as fs:
-        for line in fs:
-            line = line.rstrip().split()
-            data.append((line[3], line[3].split('_')[0]))
-    data = numpy.array(data)
-    return data
+    count = {}
+    for line in open(fname):
+        line = line.rstrip().split()
+        chrom, start, end, array = line[:4]
+        if array.count('_') == 0:
+            count.setdefault(chrom, {})
+            count[chrom].setdefault(array, 0)
+            array = '{}_{}_{}'.format(array, chrom.lstrip('chr'), count[chrom][array])
+            count[chrom][array] += 1
+        data.append((chrom, int(start), int(end), array))
+    data = numpy.array(data, dtype=numpy.dtype([('chrom', 'S6'),
+                                                ('start', numpy.int32),
+                                                ('end', numpy.int32),
+                                                ('array', 'S40')]))
+    data = data[numpy.lexsort((data['start'], data['chrom']))]
+    names = []
+    for i in range(data.shape[0]):
+        names.append((data['array'][i], data['array'][i].split(b'_')[0]))
+    names = numpy.array(names)
+    return names
 
 def load_data(samples, data_dir):
     data = {}
@@ -37,14 +51,14 @@ def load_data(samples, data_dir):
     totals = {}
     celltypes = set()
     for expID, libID, target, celltype in samples:
-        fname = "{}/{}.chm13v1_counts.npy".format(data_dir, expID)
+        fname = "{}/{}.chm13v1_array_counts.npy".format(data_dir, expID)
         if not os.path.exists(fname):
             print(expID, libID, target, celltype)
             continue
         celltypes.add(celltype)
         key = (target, celltype)
         totals.setdefault(key, 0)
-        totals[key] = int(open("bt2_dedup_kmer/{}.chm13v1.stats".format(expID)).readline().split()[0]) / 2
+        totals[key] = int(open("dedup_kmer/{}.chm13v1.stats".format(expID)).readline().split()[0]) / 2
         temp = numpy.load(fname)
         #if target == "Control":
         #    if celltype not in controls:
@@ -85,7 +99,7 @@ def score_marks(data, totals, arrays, out_fname):
     marks.sort()
     outfile = open(out_fname, 'w')
     #print("Cell type\tMark\tArray\tScore", file=outfile)
-    print("Cell type\tMark\tArray\tControl\tTreat", file=outfile)
+    print("Celltype\tMark\tArray\tControl\tTreat", file=outfile)
     for h, array in enumerate(array_names):
         where = numpy.where(arrays == array)[0]
         names = arrays[where, 0]
@@ -103,7 +117,7 @@ def score_marks(data, totals, arrays, out_fname):
                     #d = numpy.log2(d)
                     #for val in d:
                     for i, val in enumerate(d):
-                        print("{}\t{}\t{}\t{}\t{}".format(celltype, mark, n[i], c[i], val),
+                        print("{}\t{}\t{}\t{}\t{}".format(celltype, mark, n[i].decode('utf8'), c[i], val),
                               file=outfile)
                         #print("{}\t{}\t{}\t{}".format(celltype, mark, array, val),
                         #      file=outfile)

@@ -53,6 +53,7 @@ READS = []
 CTs = set()
 MARK_DICT = {}
 MARKS = set()
+EXP2LABEL_DICT = {}
 
 for line in data:
     expID, libID, read1, read2, control, target, ct = line[:7]
@@ -83,6 +84,7 @@ for line in data:
         MARK_DICT.setdefault(ct, set())
         MARK_DICT[ct].add(target)
     LABEL_DICT[label] = expID
+    EXP2LABEL_DICT[expID] = label
 
 for key in MARK_DICT.keys():
     MARK_DICT[key] = list(MARK_DICT[key])
@@ -116,6 +118,7 @@ NONCONTROL_EXPERIMENT_SET = "|".join(list(NONCONTROL_EXPERIMENT_DICT.keys()))
 EXPERIMENT_SET = "|".join(EXPERIMENTS)
 TRACK_SET = "|".join(TRACKS)
 NONCONTROL_TRACK_SET = "|".join(NONCONTROL_TRACKS)
+CONTROL_TRACK_SET = "|".join(CONTROL_TRACKS)
 LIBRARY_SET = "|".join(LIBRARIES)
 CONTROL_LIBRARY_SET = "|".join(CONTROL_LIBRARIES)
 CONCAT_SET = "|".join(list(CONCAT_DICT.keys()))
@@ -137,9 +140,10 @@ rule all:
                file=["chm13v1_array_enrichments.tsv",
                      "macs2_peak_overlap.txt",
                      "control_mapping_stats.txt",
-                     "mapping_stats.txt"]),
-        expand("Kmer_BigWigs/{genome}_{kmer}mer.bw",
-               kmer=KMERS, genome=GENOMES)
+                     "mapping_stats.txt",
+                     "chm13v1_array_bounds.csv",
+                     "chm13v1_count_depletions.tsv",
+                     "GRCh38p13_count_depletions.tsv"]),
 
 
 ######## Get software #########
@@ -148,7 +152,7 @@ rule download_software:
     output:
         "bin/{sw}"
     wildcard_constraints:
-        sw="liftOver|bedToBigBed|wigToBigWig"
+        sw="liftOver|bedToBigBed|wigToBigWig|bigBedToBed|bigBedToBed"
     params:
         sw="{sw}",
         system=SYSTEM
@@ -163,7 +167,8 @@ rule download_software:
 rule build_KMC:
     output:
         "bin/kmc",
-        "bin/kmc_genome_counts"
+        "bin/kmc_genome_counts",
+        "bin/kmc_kmer_sum"
     log:
         "logs/build_kmc.log"
     conda:
@@ -177,6 +182,8 @@ rule build_KMC:
         chmod a+rx bin/kmc
         cp KMC/bin/kmc_genome_counts bin/
         chmod a+rx bin/kmc_genome_counts
+        cp KMC/bin/kmc_kmer_sum bin/
+        chmod a+rx bin/kmc_kmer_sum
         """
 
 
@@ -205,6 +212,7 @@ rule download_liftover:
         """
         wget -O {output} http://t2t.gi.ucsc.edu/chm13/hub/t2t-chm13-v1.0/hg38Lastz/hg38.t2t-chm13-v1.0.over.chain.gz
         """
+
 
 ######## Get genomic data #########
 
@@ -238,6 +246,126 @@ rule get_chm13v1_fasta:
                                END{{ print tl,nl }}' | sort -r -k2,2n > {output.sizes}
         """
 
+rule get_chm13v1_segdup:
+    output:
+        "data/chm13v1_segdup.bed"
+    log:
+        "logs/data/chm13v1_segdup_download.log"
+    conda:
+        "envs/bedtools.yaml"
+    shell:
+        """
+        wget -O {output}.bb http://t2t.gi.ucsc.edu/chm13/hub/t2t-chm13-v1.0/sedefSegDups/chm13.draft_v1.0_plus38Y.SDs.bed.bb
+        bin/bigBedToBed {output}.bb {output}.tmp
+        awk 'BEGIN{{OFS="\t"}}{{ if($3-$2 >= 1000) print $1,$2,$3,$4}}' {output}.tmp > {output}.tmp1
+        sort -k1,1 -k2,2n {output}.tmp1 > {output}.tmp2
+        bedtools merge -d 1 -i {output}.tmp2 > {output}
+        rm {output}.tmp* {output}.bb
+        """
+
+rule get_chm13v1_repeat:
+    input:
+        segdup="data/chm13v1_segdup.bed",
+        sizes="fasta/chm13v1.chrom.sizes"
+    output:
+        rpt="data/chm13v1_repeat.bed",
+        LINE="data/chm13v1_LINE.bed",
+        sat="data/chm13v1_satellite.bed",
+        rpt_full="data/chm13v1_repeatall.bed",
+        nonrep="data/chm13v1_nonrep.bed"
+    log:
+        "logs/data/chm13v1_repeat_download.log"
+    conda:
+        "envs/bedtools.yaml"
+    shell:
+        """
+        wget -O {output.rpt}.bb http://t2t.gi.ucsc.edu/chm13/hub/t2t-chm13-v1.0/rmskV2/rmskV2.bigBed
+        bin/bigBedToBed {output.rpt}.bb {output.rpt}.tmp1
+        awk 'BEGIN{{OFS="\t"}}{{ print $1,$2,$3,$10,$11 }}' {output.rpt}.tmp1 > {output.rpt_full}
+        grep LINE {output.rpt_full} > {output.rpt}.tmp2
+        grep SINE {output.rpt_full} >> {output.rpt}.tmp2
+        sort -k1,1 -k2,2n {output.rpt}.tmp2 > {output.rpt}.tmp3
+        bedtools merge -d 1 -i {output.rpt}.tmp3 > {output.rpt}.tmp4
+        bedtools subtract -a {output.rpt}.tmp4 -b {input.segdup} > {output.LINE}
+        grep Satellite {output.rpt_full} > {output.rpt}.tmp2
+        sort -k1,1 -k2,2n {output.rpt}.tmp2 > {output.rpt}.tmp3
+        bedtools merge -d 1 -i {output.rpt}.tmp3 > {output.rpt}.tmp4
+        bedtools subtract -a {output.rpt}.tmp4 -b {input.segdup} > {output.rpt}.tmp5
+        bedtools subtract -a {output.rpt}.tmp5 -b {output.LINE} > {output.sat}
+        grep -v LINE {output.rpt_full} | grep -v SINE | grep -v Satellite > {output.rpt}.tmp2
+        sort -k1,1 -k2,2n {output.rpt}.tmp2 > {output.rpt}.tmp3
+        bedtools merge -d 1 -i {output.rpt}.tmp3 > {output.rpt}.tmp4
+        bedtools subtract -a {output.rpt}.tmp4 -b {input.segdup} > {output.rpt}.tmp5
+        bedtools subtract -a {output.rpt}.tmp5 -b {output.LINE} > {output.rpt}.tmp6
+        bedtools subtract -a {output.rpt}.tmp6 -b {output.sat} > {output.rpt}
+        awk 'BEGIN{{OFS="\t"; A="0"}}{{ print $1,A,$2 }}' {input.sizes} > {output.rpt}.tmp1
+        bedtools subtract -a {output.rpt}.tmp1 -b {input.segdup} > {output.rpt}.tmp2
+        bedtools subtract -a {output.rpt}.tmp2 -b {output.rpt} > {output.rpt}.tmp3
+        bedtools subtract -a {output.rpt}.tmp3 -b {output.LINE} > {output.rpt}.tmp4
+        bedtools subtract -a {output.rpt}.tmp4 -b {output.sat} > {output.nonrep}
+        rm {output.rpt}.tmp* {output.rpt}.bb
+        """
+
+rule get_GRCh38_segdup:
+    output:
+        "data/GRCh38p13_segdup.bed"
+    log:
+        "logs/data/GRCh38p13_segdup_download.log"
+    conda:
+        "envs/bedtools.yaml"
+    shell:
+        """
+        wget -O {output}.gz https://hgdownload.soe.ucsc.edu/goldenPath/hg38/database/genomicSuperDups.txt.gz
+        gzip -d -c {output}.gz > {output}.tmp
+        awk 'BEGIN{{OFS="\t"}}{{ if($3-$2 >= 1000) print $2,$3,$4,$5 }}' {output}.tmp > {output}.tmp1
+        sort -k1,1 -k2,2n {output}.tmp1 > {output}.tmp2
+        bedtools merge -d 1 -i {output}.tmp2 > {output}
+        rm {output}.tmp*
+        """
+
+rule get_GRCh38_repeat_mask:
+    input:
+        segdup="data/GRCh38p13_segdup.bed",
+        sizes="fasta/GRCh38p13.chrom.sizes"
+    output:
+        rpt="data/GRCh38p13_repeat.bed",
+        LINE="data/GRCh38p13_LINE.bed",
+        sat="data/GRCh38p13_satellite.bed",
+        rpt_full="data/GRCh38p13_repeatall.bed",
+        nonrep="data/GRCh38p13_nonrep.bed"
+    log:
+        "logs/data/GRCh38p13_repeat_download.log"
+    conda:
+        "envs/bedtools.yaml"
+    shell:
+        """
+        wget -O {output.rpt}.gz https://hgdownload.soe.ucsc.edu/goldenPath/hg38/database/rmsk.txt.gz
+        gzip -d -c {output.rpt}.gz > {output.rpt}.tmp
+        awk 'BEGIN{{OFS="\t"}}{{ print $6,$7,$8,$11,$12,$13 }}' {output.rpt}.tmp > {output.rpt_full}
+        grep LINE {output.rpt_full} > {output.rpt}.tmp2
+        grep SINE {output.rpt_full} >> {output.rpt}.tmp2
+        sort -k1,1 -k2,2n {output.rpt}.tmp2 > {output.rpt}.tmp3
+        bedtools merge -d 1 -i {output.rpt}.tmp3 > {output.rpt}.tmp4
+        bedtools subtract -a {output.rpt}.tmp4 -b {input.segdup} > {output.LINE}
+        grep Satellite {output.rpt_full} > {output.rpt}.tmp2
+        sort -k1,1 -k2,2n {output.rpt}.tmp2 > {output.rpt}.tmp3
+        bedtools merge -d 1 -i {output.rpt}.tmp3 > {output.rpt}.tmp4
+        bedtools subtract -a {output.rpt}.tmp4 -b {input.segdup} > {output.rpt}.tmp5
+        bedtools subtract -a {output.rpt}.tmp5 -b {output.LINE} > {output.sat}
+        grep -v LINE {output.rpt_full} | grep -v SINE | grep -v Satellite > {output.rpt}.tmp2
+        sort -k1,1 -k2,2n {output.rpt}.tmp2 > {output.rpt}.tmp3
+        bedtools merge -d 1 -i {output.rpt}.tmp3 > {output.rpt}.tmp4
+        bedtools subtract -a {output.rpt}.tmp4 -b {input.segdup} > {output.rpt}.tmp5
+        bedtools subtract -a {output.rpt}.tmp5 -b {output.LINE} > {output.rpt}.tmp6
+        bedtools subtract -a {output.rpt}.tmp6 -b {output.sat} > {output.rpt}
+        awk 'BEGIN{{OFS="\t"; A="0"}}{{ print $1,A,$2 }}' {input.sizes} > {output.rpt}.tmp1
+        bedtools subtract -a {output.rpt}.tmp1 -b {input.segdup} > {output.rpt}.tmp2
+        bedtools subtract -a {output.rpt}.tmp2 -b {output.rpt} > {output.rpt}.tmp3
+        bedtools subtract -a {output.rpt}.tmp3 -b {output.LINE} > {output.rpt}.tmp4
+        bedtools subtract -a {output.rpt}.tmp4 -b {output.sat} > {output.nonrep}
+        rm {output.rpt}.tmp* {output.rpt}.gz
+        """
+
 
 ######## Get Encode data #########
 
@@ -254,6 +382,7 @@ rule download_data:
         """
         wget https://www.encodeproject.org/files/{params.readID}/@@download/{params.readID}.fastq.gz -O {output}
         """
+
 
 ######## Concatenate fastq files #########
 
@@ -589,9 +718,8 @@ rule filter_by_kmers:
             SIZES="${{SIZES}},${{kmers[$I]}}"
             cp {params.kmer_prefix}_${{kmers[$I]}}mer.bw $tmpdir
         done
-        mv {params.tmpdir}/{params.prefix}.namesorted.bam ${{tmpdir}}/
-        cp {input} ${{tmpdir}}/{params.prefix}.namesorted.bam
-        bin/filter_by_unique_kmers.py {input} "${{tmpdir}}/{params.genome}_*mer.bw" \
+        cp {input.bam} ${{tmpdir}}/{params.prefix}.namesorted.bam
+        bin/filter_by_unique_kmers.py ${{tmpdir}}/{params.prefix}.namesorted.bam "${{tmpdir}}/{params.genome}_*mer.bw" \
             $SIZES ${{tmpdir}}/{params.prefix}.tmp
         mv ${{tmpdir}}/{params.prefix}.tmp {output}
         rm -r $tmpdir
@@ -632,6 +760,28 @@ rule bam_coverage:
         16
     log:
         "logs/deeptools/bamCoverage/{label}.{genome}.log"
+    conda:
+        "envs/deeptools.yaml"
+    shell:
+        """
+        bamCoverage -b {input.bam} -o {output} -p {threads} -bs 1
+        """
+
+rule dedup_bam_coverage:
+    input:
+        bam=lambda wildcards: expand("dedup_concat/{expID}.{{genome}}.bam",
+                                     expID=LABEL_DICT[wildcards.label]),
+        index=lambda wildcards: expand("dedup_concat/{expID}.{{genome}}.bam.bai",
+                                       expID=LABEL_DICT[wildcards.label])
+    output:
+        "Dedup_BigWigs/{label}.{genome}.bw"
+    wildcard_constraints:
+        label=CONTROL_TRACK_SET,
+        genome=GENOME_SET
+    threads:
+        16
+    log:
+        "logs/deeptools/bamCoverage/dedup_{label}.{genome}.log"
     conda:
         "envs/deeptools.yaml"
     shell:
@@ -779,7 +929,7 @@ rule liftOver_peaks:
         awk 'BEGIN{{ OFS="\t" }} NR==FNR {{ sizes[$1]=$2; next }} \
              {{ if (sizes[$1] > $3) print $0; else if (sizes[$1] > $2){{ $3=sizes[$1]; print $0; }} }}' \
              {input.sizes} tmp2_{params.track} > {output.lifted}
-        {input.bedtobigbed} -type=bed3+6 {output.lifted} {input.sizes} {output.bb}
+        {input.bedtobigbed} -type=bed3+7 {output.lifted} {input.sizes} {output.bb}
         rm tmp_{params.track} tmp2_{params.track}
         """
 
@@ -850,7 +1000,7 @@ rule get_control_mapping_stats:
             LIBS=($(eval grep ${{E}} {params.samples} | grep -v ",${{E}}," | \
                     awk 'BEGIN{{ FS=","; OFS=""; ORS=" " }}{{ print $2 }}'))
             for F in mapped filtered; do
-                temp="${{E}},${{F}}
+                temp="${{E}},${{F}}"
                 for G in ${{genomes[*]}}; do
                     C=0
                     for L in ${{LIBS[*]}}; do
@@ -861,7 +1011,7 @@ rule get_control_mapping_stats:
                 done
                 echo $temp >> output
             done
-            temp="${{E}},${{F}}
+            temp="${{E}},${{F}}"
             for G in ${{genomes[*]}}; do
                 C=$(eval tail -n +5 dedup_concat/${{E}}.${{G}}.stats | \
                     head -n 1 | awk 'BEGIN{{ ORS="" }}{{ print $1 }}')
@@ -869,7 +1019,7 @@ rule get_control_mapping_stats:
                 temp="${{temp}},$C"
             done
             echo $temp >> {output}
-            temp="${{E}},${{F}}
+            temp="${{E}},${{F}}"
             for G in ${{genomes[*]}}; do
                 C=$(eval tail -n +5 dedup_kmer/${{E}}.${{G}}.stats | \
                     head -n 1 | awk 'BEGIN{{ ORS="" }}{{ print $1 }}')
@@ -947,13 +1097,13 @@ rule get_mapping_stats:
         done
         """
 
-rule count_reads:
+rule count_array_reads:
     input:
         bam="dedup_kmer/{expID}.{genome}.bam",
         index="dedup_kmer/{expID}.{genome}.bam.bai",
-        anno="data/t2t_cenSatAnnotation.bed"
+        anno="data/t2t_cenSatAnnotation2.bed"
     output:
-        "region_scores/{expID}.{genome}_counts.npy"
+        "region_scores/{expID}.{genome}_array_counts.npy"
     wildcard_constraints:
         expID=EXPERIMENT_SET,
         genome=GENOME_SET
@@ -966,9 +1116,30 @@ rule count_reads:
         bin/count_region_reads.py {input.bam} {input.anno} {output}
         """
 
-rule score_read_counts:
+rule count_group_reads:
     input:
-        counts=expand("region_scores/{expID}.{{genome}}_counts.npy",
+        bam="{folder}/{expID}.{genome}.bam",
+        index="{folder}/{expID}.{genome}.bam.bai",
+        group="data/{genome}_{group}.bed"
+    output:
+        "region_scores/{expID}.{genome}_{folder}_{group}_counts.npy"
+    wildcard_constraints:
+        expID=CONTROL_EXPERIMENT_SET,
+        genome=GENOME_SET,
+        folder="dedup_kmer|dedup_concat|mapped_concat",
+        group="segdup|LINE|repeat|satellite|nonrep|repeatall"
+    log:
+        "logs/{group}_reads/{expID}.{genome}.{folder}.log"
+    conda:
+        "envs/samtools.yaml"
+    shell:
+        """
+        bin/count_region_reads.py {input.bam} {input.group} {output}
+        """
+
+rule score_array_counts:
+    input:
+        counts=expand("region_scores/{expID}.{{genome}}_array_counts.npy",
                       expID=EXPERIMENTS),
         stats=expand("dedup_kmer/{expID}.{{genome}}.stats",
                       expID=EXPERIMENTS),
@@ -989,7 +1160,41 @@ rule score_read_counts:
         bin/score_read_counts.py {params.samples} {input.anno} {params.datadir} {output}
         """
 
-rule liftOver_intersection:
+rule score_group_counts:
+    input:
+        counts=expand("region_scores/{expID}.{{genome}}_{folder}_{group}_counts.npy",
+                      expID=CONTROL_EXPERIMENTS, folder=["dedup_kmer", "mapped_concat"],
+                      group=["segdup", "repeat", "LINE", "satellite", "nonrep"]),
+        stats=expand("{folder}/{expID}.{{genome}}.stats",
+                      expID=CONTROL_EXPERIMENTS, folder=["dedup_kmer", "mapped_concat"]),
+        nonrep="data/{genome}_nonrep.bed",
+        repeat="data/{genome}_repeat.bed",
+        LINE="data/{genome}_LINE.bed",
+        sat="data/{genome}_satellite.bed",
+        segdup="data/{genome}_segdup.bed"
+    output:
+        "results/{genome}_count_depletions.tsv"
+    params:
+        samples=SAMPLEFILE,
+        datadir="region_scores",
+        genome="{genome}",
+        bfolder="mapped_concat",
+        afolder="dedup_kmer",
+    wildcard_constraints:
+        genome=GENOME_SET
+    log:
+        "logs/analysis/{genome}_count_depletions.log"
+    conda:
+        "envs/deepsam.yaml"
+    shell:
+        """
+        bin/score_depletion_counts.py {params.samples} {input.repeat} \
+            {input.LINE} {input.sat} {input.segdup} {input.nonrep} \
+            {params.bfolder} {params.afolder} {params.datadir} \
+            {params.genome} {output}
+        """
+
+rule macs2_liftOver_intersection:
     input:
         c_narrow=expand("macs2/{label}.chm13v1_peaks.narrowPeak",
                         label=NARROW_TRACKS),
@@ -1040,4 +1245,27 @@ rule liftOver_intersection:
             awk '{{ print $1 }}')" >> {output}
         done
         rm intersected
+        """
+
+rule find_bound_profiles:
+    input:
+        anno="data/t2t_cenSatAnnotation2.bed",
+        sizes="fasta/chm13v1.chrom.sizes"
+    output:
+        "results/chm13v1_array_bounds.csv"
+    params:
+        samples=SAMPLEFILE,
+        bw_dir="Encode_BigWigs",
+        window=100000,
+        minsize=18000,
+        binsize=500
+    threads:
+        MAXTHREADS
+    conda:
+        "envs/deepsam.yaml"
+    shell:
+        """
+        bin/find_bound_profiles.py {params.samples} {input.anno} {input.sizes} \
+                                   {params.bw_dir} {params.minsize} {params.window} \
+                                   {params.binsize} {threads} {output}
         """
